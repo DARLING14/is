@@ -1,0 +1,26 @@
+[+] Saving output in: /home/user/geoloc_20240601_153000
+
+[*] WHOIS and DNS Recon
+[*] Google Dorking for addresses (limited by scraping)
+[*] Phone Lookup
+[*] Extracting raw addresses
+[*] Geocoding addresses with OpenStreetMap Nominatim
+[+] Geocoding: 123 Example Street, Cityname
+[+] Found: 37.123456,-122.654321
+[*] Generating Google Maps URLs and KML file
+
+========== RESULTS SUMMARY ==========
+Target: Jane Doe
+Output folder: /home/user/geoloc_20240601_153000
+
+✅ Coordinates found: 5
+✅ Google Maps links file: maps_links.txt
+First link: https://www.google.com/maps?q=37.123456,-122.654321
+
+Files generated:
+  coordinates.txt  - Addresses with lat,long
+  maps_links.txt   - Google Maps URLs
+  pinpoint.kml     - KML file for Google Earth
+  google_dorks.txt - Google Scraped addresses
+
+[+] Geolocation OSINT completed. Check directory: /home/user/geoloc_20240601_153000
