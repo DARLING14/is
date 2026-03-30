@@ -1,223 +1,176 @@
-#!/bin/bash
-# Geolocator.sh - Precision person/address location tracker for Kali Linux
-# Usage: ./Geolocator.sh -t target_name [-a address] [-p phone] [-e email] [-u username]
+ #!/bin/bash
+# Geolocator v3.0 - Enhanced OSINT Geolocation Tool
+# Dependencies: whois, dig, host, curl, jq, theHarvester (optional)
+# Usage: ./geolocator.sh -t "Target Name" [-p phone] [-e email]
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Banner
-echo -e "${BLUE}"
-cat << 'EOF'
-██╗  ██╗ █████╗ ███╗   ███╗██████╗  ██████╗ ██████╗ 
-██║  ██║██╔══██╗████╗ ████║██╔══██╗██╔═══██╗██╔══██╗
-███████║███████║██╔████╔██║██████╔╝██║   ██║██████╔╝
-██╔══██║██╔══██║██║╚██╔╝██║██╔══██╗██║   ██║██╔══██╗
-██║  ██║██║  ██║██║ ╚═╝ ██║██║  ██║╚██████╔╝██║  ██║
-╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═╝
-EOF
-echo -e "${NC}"
-
-# Check dependencies
-dependencies=("curl" "python3" "whois" "dnsenum" "theHarvester" "maltego" "recon-ng")
-missing_deps=()
-
-for dep in "${dependencies[@]}"; do
-    if ! command -v "$dep" &> /dev/null; then
-        missing_deps+=("$dep")
-    fi
-done
-
-if [ ${#missing_deps[@]} -ne 0 ]; then
-    echo -e "${YELLOW}[!] Missing dependencies: ${missing_deps[*]}${NC}"
-    echo -e "${GREEN}[+] Installing missing dependencies...${NC}"
-    sudo apt update && sudo apt install -y "${missing_deps[@]}"
+if ! command -v jq &> /dev/null; then
+  echo -e "${RED}[-] jq is required but not installed. Install with: sudo apt install jq${NC}"
+  exit 1
 fi
 
-# Function to show usage
-usage() {
-    echo "Usage: $0 -t target_name [options]"
-    echo "Options:"
-    echo "  -t TARGET     Target name (required)"
-    echo "  -a ADDRESS    Known address"
-    echo "  -p PHONE      Phone number"
-    echo "  -e EMAIL      Email address"
-    echo "  -u USERNAME   Social media username"
-    echo "  -o OUTPUT     Output directory"
-    exit 1
-}
+echo -e "${BLUE}"
+echo "██╗  ██╗ █████╗ ███╗   ███╗██████╗"
+echo "GEOLOCATOR v3.0 - Enhanced OSINT Geolocation${NC}\n"
 
-# Parse arguments
-while getopts "t:a:p:e:u:o:h" opt; do
-    case $opt in
-        t) TARGET="$OPTARG" ;;
-        a) ADDRESS="$OPTARG" ;;
-        p) PHONE="$OPTARG" ;;
-        e) EMAIL="$OPTARG" ;;
-        u) USERNAME="$OPTARG" ;;
-        o) OUTPUT="$OPTARG" ;;
-        h) usage ;;
-        *) usage ;;
+# Parse args
+TARGET=""
+PHONE=""
+EMAIL=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -t|--target) TARGET="$2"; shift 2 ;;
+        -p|--phone) PHONE="$2"; shift 2 ;;
+        -e|--email) EMAIL="$2"; shift 2 ;;
+        *) echo "Usage: $0 -t 'John Doe' [-p 5551234567] [-e email@domain.com]"; exit 1 ;;
     esac
 done
 
-if [ -z "$TARGET" ]; then
-    echo -e "${RED}[!] Target name is required (-t)${NC}"
-    usage
+[ -z "$TARGET" ] && { echo -e "${RED}[-] Target is required${NC}"; exit 1; }
+
+OUTPUT="geoloc_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$OUTPUT" && cd "$OUTPUT"
+
+echo -e "${GREEN}[+] Saving output in: $PWD${NC}\n"
+
+# 1. WHOIS + DNS Recon
+echo -e "${BLUE}[*] WHOIS and DNS Recon${NC}"
+if [[ "$TARGET" == *"."* ]]; then
+    whois "$TARGET" > whois.txt 2>/dev/null || echo "[!] whois failed"
+    dig +short "$TARGET" > dns.txt 2>/dev/null
+    host "$TARGET" >> dns.txt 2>/dev/null
+else
+    echo "[*] Target not domain, skipping whois/dns"
 fi
 
-# Create output directory
-OUTPUT_DIR="${OUTPUT:-$(date +%Y%m%d_%H%M%S)_${TARGET// /_}}"
-mkdir -p "$OUTPUT_DIR"
-cd "$OUTPUT_DIR" || exit 1
-
-echo -e "${GREEN}[+] Output directory: $OUTPUT_DIR${NC}"
-
-# 1. Person Name -> Address Resolution
-echo -e "${BLUE}[*] Phase 1: Name to Address Resolution${NC}"
-python3 << 'EOF'
-import requests
-import json
-import re
-from bs4 import BeautifulSoup
-
-def whitepages_search(name, state=None):
-    print("[+] Searching Whitepages...")
-    url = f"https://www.whitepages.com/name/{name.replace(' ', '-')}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    }
-    try:
-        resp = requests.get(url, headers=headers)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        addresses = []
-        for item in soup.find_all('div', class_='result'):
-            addr = item.find('span', class_='address')
-            if addr:
-                addresses.append(addr.text.strip())
-        return addresses
-    except:
-        return []
-
-def truepeoplesearch(name):
-    print("[+] Searching TruePeopleSearch...")
-    url = f"https://www.truepeoplesearch.com/results?name={name.replace(' ', '%20')}"
-    addresses = whitepages_search(name)  # Fallback
-    return addresses
-
-target = "$TARGET".replace('"', '')
-addresses = whitepages_search(target) + truepeoplesearch(target)
-
-with open('addresses.txt', 'w') as f:
-    for addr in addresses:
-        f.write(addr + '\n')
-        print(f"[+] Found address: {addr}")
-
-print(f"[+] Addresses saved to addresses.txt")
-EOF
-
-# 2. Reverse Address Lookup
-echo -e "${BLUE}[*] Phase 2: Reverse Address Lookup${NC}"
-if [ -f "addresses.txt" ]; then
-    while IFS= read -r addr; do
-        if [ -n "$addr" ]; then
-            echo -e "${YELLOW}[+] Processing: $addr${NC}"
-            
-            # Zillow property details
-            curl -s "https://www.zillow.com/homes/$(echo $addr | tr ' ' '-' | tr ',' '%2C')" \
-                -H "User-Agent: Mozilla/5.0" | grep -oP '(?<=property-details")[^"]*' >> property_data.txt
-            
-            # Google Maps coordinates
-            coords=$(curl -s "https://nominatim.openstreetmap.org/search?q=$(echo $addr | sed 's/ /+/g')&format=json" \
-                | grep -o '"lat":[^,}]*' | head -1 | cut -d: -f2 | tr -d ' ')
-            if [ -n "$coords" ]; then
-                lat=$(echo $coords | cut -d, -f1)
-                lon=$(echo $coords | cut -d, -f2)
-                echo "$addr | $lat,$lon" >> coordinates.txt
-                echo -e "${GREEN}[+] Coordinates: $lat, $lon${NC}"
-            fi
-        fi
-    done < addresses.txt
+# Optional: TheHarvester
+if command -v theHarvester &> /dev/null && [[ "$TARGET" != *"."* ]]; then
+    echo -e "${BLUE}[*] Running theHarvester${NC}"
+    theHarvester -d "$TARGET" -l 100 -b google,bing -f harvester.html || echo "[!] theHarvester failed"
 fi
 
-# 3. Social Media Username Enumeration
-if [ -n "$USERNAME" ]; then
-    echo -e "${BLUE}[*] Phase 3: Social Media Enumeration${NC}"
-    theHarvester -d "$USERNAME" -b linkedin,twitter,facebook -f social_results.html
-fi
+# 2. Google dorking for address keywords
+echo -e "${BLUE}[*] Google Dorking for addresses (limited by scraping)${NC}"
+SEARCH_QUERY=$(echo "\"$TARGET\"+\"address\"+OR+\"$TARGET\"+\"street\"+OR+\"$TARGET\"+\"lives+at\"" | sed 's/ /%20/g')
+USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36"
 
-# 4. Phone Number Geolocation
+curl -s -A "$USER_AGENT" "https://www.google.com/search?q=${SEARCH_QUERY}" | \
+    grep -Ei "(street|road|avenue|drive|lane|blvd|apt|apartment|city|state)" | \
+    head -40 > google_dorks.txt
+
+# 3. Phone lookup if provided
 if [ -n "$PHONE" ]; then
-    echo -e "${BLUE}[*] Phase 4: Phone Geolocation${NC}"
-    curl -s "https://www.freecarrierlookup.com/index.php?phone=$PHONE" > phone_info.html
-    grep -i "location\|city\|state\|address" phone_info.html >> phone_geodata.txt
+    echo -e "${BLUE}[*] Phone Lookup${NC}"
+    PHONE_CLEAN=$(echo "$PHONE" | tr -cd '[:digit:]')
+    curl -s -A "$USER_AGENT" "https://www.numbertracking.com/phone-lookup/$PHONE_CLEAN" > phone.html
+    grep -i "city\|state\|location\|address" phone.html > phone_data.txt || echo "[!] Phone lookup parsing failed"
 fi
 
-# 5. Email to Person/Address
-if [ -n "$EMAIL" ]; then
-    echo -e "${BLUE}[*] Phase 5: Email Recon${NC}"
-    recon-ng -r email_to_person.rc --options email="$EMAIL"
-fi
+# 4. Extract addresses from gathered data
+echo -e "${BLUE}[*] Extracting raw addresses${NC}"
+cat google_dorks.txt whois.txt 2>/dev/null | \
+grep -Ei "(street|road|ave|dr|ln|blvd|apt|apartment|city|state)" | \
+sed 's/[^a-zA-Z0-9 ,.-]//g' | sort -u > raw_addresses.txt
 
-# 6. Generate KML for Google Earth
-echo -e "${BLUE}[*] Phase 6: KML Generation${NC}"
-cat > locations.kml << 'EOF'
+# 5. Geocode addresses with Nominatim using jq to parse JSON
+echo -e "${BLUE}[*] Geocoding addresses with OpenStreetMap Nominatim${NC}"
+> coordinates.txt
+while IFS= read -r addr; do
+    [ -z "$addr" ] && continue
+    echo -e "${YELLOW}[+] Geocoding: $addr${NC}"
+    # Respect Nominatim usage policy: max 1 req/sec
+    sleep 1
+    json=$(curl -s -A "$USER_AGENT" "https://nominatim.openstreetmap.org/search?format=json&limit=1&q=$(echo "$addr" | sed 's/ /%20/g')")
+    lat=$(echo "$json" | jq -r '.[0].lat // empty')
+    lon=$(echo "$json" | jq -r '.[0].lon // empty')
+    if [[ -n "$lat" && -n "$lon" ]]; then
+        echo "$addr | $lat,$lon" >> coordinates.txt
+        echo -e "${GREEN}[+] Found: $lat,$lon${NC}"
+    else
+        echo -e "${RED}[-] No result for: $addr${NC}"
+    fi
+done < raw_addresses.txt
+
+# 6. Generate Google Maps links and KML
+if [ -s coordinates.txt ]; then
+    echo -e "${BLUE}[*] Generating Google Maps URLs and KML file${NC}"
+    > maps_links.txt
+
+    # Google Maps links
+    while IFS= read -r line; do
+        coords=$(echo "$line" | grep -oE '[0-9.-]+,[0-9.-]+')
+        if [ -n "$coords" ]; then
+            echo "https://www.google.com/maps?q=$coords" >> maps_links.txt
+        fi
+    done < coordinates.txt
+
+    # KML file
+    cat > pinpoint.kml << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
 <Document>
+<name>$TARGET Locations</name>
 EOF
 
-if [ -f "coordinates.txt" ]; then
-    while IFS='|' read -r addr coords; do
-        if [[ $coords =~ ([0-9.-]+),([0-9.-]+) ]]; then
-            lat="${BASH_REMATCH[1]}"
-            lon="${BASH_REMATCH[2]}"
-            cat >> locations.kml << EOF
+    while IFS= read -r line; do
+        coords=$(echo "$line" | grep -oE '[0-9.-]+,[0-9.-]+')
+        addr=$(echo "$line" | cut -d'|' -f1 | xargs)
+        if [ -n "$coords" ]; then
+            lat=$(echo "$coords" | cut -d, -f1)
+            lon=$(echo "$coords" | cut -d, -f2)
+            cat >> pinpoint.kml << EOF
   <Placemark>
-    <name>$(echo "$addr" | sed 's/&/\&amp;/g')</name>
-    <Point><coordinates>$lon,$lat,0</coordinates></Point>
+    <name>$addr</name>
+    <Point><coordinates>$lat,$lon,0</coordinates></Point>
   </Placemark>
 EOF
         fi
     done < coordinates.txt
+
+    echo "</Document></kml>" >> pinpoint.kml
+    echo -e "${GREEN}[+] KML file created: pinpoint.kml${NC}"
+else
+    echo -e "${RED}[-] No coordinates found, skipping map generation${NC}"
 fi
 
-cat >> locations.kml << 'EOF'
-</Document>
-</kml>
-EOF
+# 7. Summary report
+echo -e "\n${GREEN}========== RESULTS SUMMARY ==========${NC}"
+echo "Target: $TARGET"
+echo "Output folder: $PWD"
+echo ""
+if [ -s coordinates.txt ]; then
+    echo "✅ Coordinates found: $(wc -l < coordinates.txt)"
+else
+    echo "❌ No coordinates found"
+fi
 
-# 7. Generate HTML Report
-cat > report.html << EOF
-<!DOCTYPE html>
-<html>
-<head><title>GeoLocator Report: $TARGET</title></head>
-<body>
-<h1>GeoLocator Results: $TARGET</h1>
-<h2>Found Addresses:</h2>
-<pre>$(cat addresses.txt 2>/dev/null || echo "None found")</pre>
-<h2>Coordinates:</h2>
-<pre>$(cat coordinates.txt 2>/dev/null || echo "None found")</pre>
-<h2>Phone Data:</h2>
-<pre>$(cat phone_geodata.txt 2>/dev/null || echo "None found")</pre>
-<p><a href="locations.kml">Download KML for Google Earth</a></p>
-</body>
-</html>
-EOF
+if [ -s maps_links.txt ]; then
+    echo "✅ Google Maps links file: maps_links.txt"
+    echo "First link: $(head -1 maps_links.txt)"
+else
+    echo "❌ No map links generated"
+fi
 
-echo -e "${GREEN}"
-echo "=============================================="
-echo "GEOLOCATOR COMPLETE - Results in: $OUTPUT_DIR"
-echo "=============================================="
-echo "- addresses.txt     : Found addresses"
-echo "- coordinates.txt   : GPS coordinates"
-echo "- locations.kml     : Google Earth overlay"
-echo "- report.html       : Complete HTML report"
-echo "- social_results.html : Social media data"
-echo "==============================================${NC}"
+echo "Files generated:"
+echo "  coordinates.txt  - Addresses with lat,long"
+echo "  maps_links.txt   - Google Maps URLs"
+echo "  pinpoint.kml     - KML file for Google Earth"
+echo "  google_dorks.txt - Google Scraped addresses"
+echo ""
 
-# Open report in browser
-xdg-open "file://$PWD/report.html"
+echo -e "${YELLOW}[+] You can copy any lat,long coordinate to Google Maps:${NC}"
+echo "https://www.google.com/maps?q=LAT,LON"
+
+# Optionally open first Google Maps link
+if [ -s maps_links.txt ]; then
+    if command -v xdg-open &> /dev/null; then
+        xdg-open "$(head -1 maps_links.txt)" 2>/dev/null
+    fi
+fi
+
+echo -e "${GREEN}[+] Geolocation OSINT completed. Check directory: $PWD${NC}"
