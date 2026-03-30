@@ -1,0 +1,10 @@
+# 1. Save as Geolocator.sh and make executable
+chmod +x Geolocator.sh
+
+# 2. Install additional Python dependencies
+pip3 install requests beautifulsoup4
+
+# 3. Usage examples:
+./Geolocator.sh -t "John Doe"
+./Geolocator.sh -t "John Doe" -p "555-123-4567" -u "johndoe123"
+./Geolocator.sh -t "Jane Smith" -a "123 Main St, Anytown, CA" -e "jane@example.com"
